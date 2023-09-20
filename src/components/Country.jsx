@@ -12,6 +12,7 @@ const Country = (props) => {
     medals.forEach(medal => { sum += country[medal.name]; });
     return sum;
   }
+  
   return (
     <Card>
       <Card.Body>
