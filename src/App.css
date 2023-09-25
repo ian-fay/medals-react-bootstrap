@@ -25,3 +25,8 @@
     border-radius: .25rem;
     opacity: .5;
 }
+
+.delta {
+    color: red;
+    font-style: italic;
+}
