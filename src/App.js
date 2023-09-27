@@ -2,6 +2,8 @@
 // Author:      Jeff Grissom
 // Version:     4.xx
 import React, { useState, useEffect, useRef } from 'react';
+import axios from 'axios';
+import { HubConnectionBuilder } from '@microsoft/signalr';
 import Country from './components/Country';
 import NewCountry from './components/NewCountry';
 import Container from 'react-bootstrap/Container';
@@ -9,58 +11,110 @@ import Navbar from 'react-bootstrap/Navbar';
 import Badge from 'react-bootstrap/Badge';
 import Row from 'react-bootstrap/Row';
 import Col from 'react-bootstrap/Col';
-import axios from 'axios';
 import './App.css';
 
 const App = () => {
-  const apiEndpoint = "https://medals-api-6.azurewebsites.net/api/country";;
+  const apiEndpoint = "https://medals-api-6.azurewebsites.net/api/country";
+  const hubEndpoint = "https://medals-api-6.azurewebsites.net/medalsHub"
   const [ countries, setCountries ] = useState([]);
+  const [ connection, setConnection] = useState(null);
   const medals = useRef([
     { id: 1, name: 'gold' },
     { id: 2, name: 'silver' },
     { id: 3, name: 'bronze' },
   ]);
+  const latestCountries = useRef(null);
+  // latestCountries.current is a ref variable to countries
+  // this is needed to access state variable in useEffect w/o dependency
+  latestCountries.current = countries;
 
   // this is the functional equivalent to componentDidMount
   useEffect(() => {
     // initial data loaded here
     async function fetchCountries() {
       const { data : fetchedCountries } = await axios.get(apiEndpoint);
-            // we need to save the original medal count values in state
-            let newCountries = [];
-            fetchedCountries.forEach(country => {
-              let newCountry = {
-                id: country.id,
-                name: country.name,
-              };
-              medals.current.forEach(medal => {
-                const count = country[medal.name];
-                // page_value is what is displayed on the web page
-                // saved_value is what is saved to the database
-                newCountry[medal.name] = { page_value: count, saved_value: count };
-              });
-              newCountries.push(newCountry);
-            });
-            setCountries(newCountries);
+      // we need to save the original medal count values in state
+      let newCountries = [];
+      fetchedCountries.forEach(country => {
+        let newCountry = {
+          id: country.id,
+          name: country.name,
+        };
+        medals.current.forEach(medal => {
+          const count = country[medal.name];
+          // page_value is what is displayed on the web page
+          // saved_value is what is saved to the database
+          newCountry[medal.name] = { page_value: count, saved_value: count };
+        });
+        newCountries.push(newCountry);
+      });
+      setCountries(newCountries);
     }
     fetchCountries();
+
+    // signalR
+    const newConnection = new HubConnectionBuilder()
+      .withUrl(hubEndpoint)
+      .withAutomaticReconnect()
+      .build();
+
+    setConnection(newConnection);
   }, []);
 
-  const handleAdd = async (name) => {
-    const { data: post } = await axios.post(apiEndpoint, { name: name });
-    let newCountry = { 
-      id: post.id, 
-      name: post.name,
-    };
-    medals.current.forEach(medal => {
-      const count = post[medal.name];
-      // when a new country is added, we need to store page and saved values for
-      // medal counts in state
-      newCountry[medal.name] = { page_value: count, saved_value: count };
-    });
-    setCountries(countries.concat(newCountry));
-  }
+  // componentDidUpdate (changes to connection)
+  useEffect(() => {
+    if (connection) {
+      connection.start()
+      .then(() => {
+        console.log('Connected!')
 
+        connection.on('ReceiveAddMessage', country => {
+          console.log(`Add: ${country.name}`);
+
+          let newCountry = { 
+            id: country.id, 
+            name: country.name,
+          };
+          medals.current.forEach(medal => {
+            const count = country[medal.name];
+            newCountry[medal.name] = { page_value: count, saved_value: count };
+          });
+          let mutableCountries = [...latestCountries.current];
+          mutableCountries = mutableCountries.concat(newCountry);
+          setCountries(mutableCountries);
+        });
+
+        connection.on('ReceiveDeleteMessage', id => {
+          console.log(`Delete id: ${id}`);
+          let mutableCountries = [...latestCountries.current];
+          mutableCountries = mutableCountries.filter(c => c.id !== id);
+          setCountries(mutableCountries);
+        });
+        connection.on('ReceivePatchMessage', country => {
+          console.log(`Patch: ${country.name}`);
+          let updatedCountry = {
+            id: country.id,
+            name: country.name,
+          }
+          medals.current.forEach(medal => {
+            const count = country[medal.name];
+            updatedCountry[medal.name] = { page_value: count, saved_value: count };
+          });
+          let mutableCountries = [...latestCountries.current];
+          const idx = mutableCountries.findIndex(c => c.id === country.id);
+          mutableCountries[idx] = updatedCountry;
+
+          setCountries(mutableCountries);
+        });
+      })
+      .catch(e => console.log('Connection failed: ', e));
+    }
+  // useEffect is dependent on changes connection
+  }, [connection]);
+
+  const handleAdd = async (name) => {
+    await axios.post(apiEndpoint, { name: name });
+  }
   const handleDelete = async (countryId) => {
     const originalCountries = countries;
     setCountries(countries.filter(c => c.id !== countryId));
@@ -76,7 +130,6 @@ const App = () => {
       }
     }
   }
-
   const handleSave = async (countryId) => {
     const originalCountries = countries;
 
@@ -106,18 +159,16 @@ const App = () => {
       }
     }
   }
-  
   const handleReset = (countryId) => {
-        // to reset, make page value the same as the saved value
-        const idx = countries.findIndex(c => c.id === countryId);
-        const mutableCountries = [ ...countries ];
-        const country = mutableCountries[idx];
-        medals.current.forEach(medal => {
-          country[medal.name].page_value = country[medal.name].saved_value;
-        });
-        setCountries(mutableCountries);
+    // to reset, make page value the same as the saved value
+    const idx = countries.findIndex(c => c.id === countryId);
+    const mutableCountries = [ ...countries ];
+    const country = mutableCountries[idx];
+    medals.current.forEach(medal => {
+      country[medal.name].page_value = country[medal.name].saved_value;
+    });
+    setCountries(mutableCountries);
   }
-
   const handleIncrement = (countryId, medalName) => handleUpdate(countryId, medalName, 1);
   const handleDecrement = (countryId, medalName) => handleUpdate(countryId, medalName, -1);
   const handleUpdate = (countryId, medalName, factor) => {
